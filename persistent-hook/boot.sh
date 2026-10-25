@@ -47,3 +47,15 @@ while [ $i -lt 36 ]; do
   i=$((i+1)); sleep 5
 done
 ' </dev/null >>/opt/usr/share/tvroot/dropbear.log 2>&1 &
+
+# start cecdump (CEC input-name bridge for CleanFrame, :8787) — unsigned, so
+# it waits out the same UEP patch window as dropbear; same retry pattern.
+setsid /bin/sh -c '
+i=0
+while [ $i -lt 36 ]; do
+  grep -q ":224F .* 0A " /proc/net/tcp && exit 0
+  [ -x /opt/bin/cecdump ] || exit 0
+  ( /opt/bin/cecdump )
+  i=$((i+1)); sleep 5
+done
+' </dev/null >>/opt/usr/share/tvroot/cec/cecdump.log 2>&1 &
