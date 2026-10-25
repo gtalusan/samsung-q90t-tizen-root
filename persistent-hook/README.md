@@ -21,7 +21,7 @@ same byte length, and the hook runs as root on every boot.
 | `hook-fragment.sh` | The hook itself (once per boot, backgrounded, waits for `/opt`). |
 | `build-patch.py` | Builds a **same-size** patched copy of *your own* vendor script, compacting only if needed. |
 | `apply-persistent-hook.sh` | Locates the file on the raw eMMC device, verifies it against the vendor hash, backs up the exact blocks, writes the patch, verifies the readback. |
-| `boot.sh` | Runs once per boot: calls `debloat.sh` **by content** (UEP-safe). |
+| `boot.sh` | Runs once per boot: calls `debloat.sh` **by content** (UEP-safe), starts the root agent (with pid dedup), and starts the dropbear retry loop. |
 | `debloat.sh` | The `/run/systemd/system` masks + delayed `--no-block` stop pass + census. |
 | `rollback.sh` | Restores the vendor blocks from the backup. |
 
@@ -55,6 +55,29 @@ touch /opt/usr/share/tvroot/cmd/disabled     # agent idles until removed
 
 Or remove `agent.sh` and reboot; the boot hook then logs "root agent not installed".
 
+## Dropbear SSH at boot
+
+`boot.sh` ends with a setsid-detached retry loop that starts the unsigned
+`dropbearmulti` on `:22` — which is only possible on **stick boots**, because
+the USB stick's kernel stage patches the UEP gate ~15–60 s into boot, *after*
+the hook ran at ~0.7 s. The loop retries every 5 s (36 tries, each attempt in
+its own subshell so an EPERM refusal can't kill the loop), so dropbear comes
+up on its own shortly after the patch lands. On a stickless boot the gate
+never goes down and the loop gives up quietly after ~3 minutes.
+
+Prerequisites (installed by the stick's p2 stage, see the
+samsung-tv-usb-root repo):
+
+* `/opt/bin/dropbearmulti` (unsigned — only execs when the gate is down)
+* `/opt/etc/dropbear/dropbear_host_ed25519` — the invocation must pass
+  `-r` explicitly: `/etc/dropbear` is read-only-empty and without it dropbear
+  exits "No hostkeys available"
+* `/opt/etc/dropbear/authorized_keys`
+
+Log: `/opt/usr/share/tvroot/dropbear.log`. On a successful stick boot it shows
+a few `Operation not permitted` lines (early attempts) followed by
+`Not backgrounding` and `Pubkey auth succeeded`.
+
 ## The UEP rule (read this twice)
 
 Tizen's UEP gate hooks **script file loading**. Any of these is refused:
@@ -73,6 +96,14 @@ sh -c "$(cat /opt/usr/share/tvroot/boot.sh)"
 
 Nothing unsigned is ever `execve`d, so there is nothing for UEP to check. Both
 links in this kit (profile.d → `boot.sh`, `boot.sh` → `debloat.sh`) use it.
+
+**Field note (2026-10-25):** on this TV the refusal manifests as a **hang** —
+`sh FILE`, `bash FILE`, and even `sh -n FILE` / `bash -n FILE` wedge the caller
+indefinitely and leave stuck root orphans (this is separate from the binary
+exec gate; it applies even while the gate is patched down). Never invoke a
+script by path, and never syntax-check with `-n` — run by content, or test
+live. `scp` also fails (no sftp-server); stream files with
+`ssh root@tv 'cat > /path' < localfile`.
 
 ## Procedure
 
